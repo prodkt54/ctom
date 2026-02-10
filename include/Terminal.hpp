@@ -3,7 +3,7 @@
 #include <vector>
 #include <string>
 
-struct TerminalSegment {
+struct TerminalSegment { 
     std::string text;
     Color color;
 };
