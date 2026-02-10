@@ -3,6 +3,19 @@
 #include "../include/FileManager.hpp"
 #include "../include/Terminal.hpp"
 #include <cstdlib> 
+#include <unistd.h>
+#include <string>
+
+static void SetupAppWorkingDir() {
+    // When launched from Finder, cwd isn't the project folder. Try app Resources.
+    std::string appDir = GetApplicationDirectory();
+    if (!appDir.empty()) {
+        std::string resourcesDir = appDir + "../Resources/";
+        if (DirectoryExists(resourcesDir.c_str())) {
+            chdir(resourcesDir.c_str());
+        }
+    }
+}
 
 struct AppState {
     bool showMenuFile = false; 
@@ -65,7 +78,7 @@ void HandleTextInput(std::string& target, int& cursor) {
 
 // --- MODALS ---
 
-void DrawSettings(Rectangle bounds, Font font, Editor& editor, AppState& app) {
+void DrawSettings(Rectangle bounds, Font font, Editor& editor, Terminal& terminal, AppState& app) {
     DrawRectangleRec(bounds, theme.panelBg); 
     DrawRectangleLinesEx(bounds, 2, theme.border);
     DrawTextEx(font, "SETTINGS", {bounds.x+10, bounds.y+10}, 24, 1, theme.menuText);
@@ -112,6 +125,39 @@ void DrawSettings(Rectangle bounds, Font font, Editor& editor, AppState& app) {
         }
 
         y += 70;
+        // Image Preview
+        DrawTextEx(font, "Image Preview:", {bounds.x+20, y}, (float)Config::FONT_SIZE_UI, 1, GRAY);
+        if (DrawMenuBtn({bounds.x+160, y-5, 60, 26}, settings.imagePreview ? "On" : "Off", font, theme.btnNormal)) {
+            settings.imagePreview = !settings.imagePreview;
+        }
+
+        y += 40;
+        // Audio Preview
+        DrawTextEx(font, "Audio Preview:", {bounds.x+20, y}, (float)Config::FONT_SIZE_UI, 1, GRAY);
+        if (DrawMenuBtn({bounds.x+160, y-5, 60, 26}, settings.audioPreview ? "On" : "Off", font, theme.btnNormal)) {
+            settings.audioPreview = !settings.audioPreview;
+        }
+
+        y += 40;
+        // Shell Path
+        DrawTextEx(font, "Shell Path:", {bounds.x+20, y}, (float)Config::FONT_SIZE_UI, 1, GRAY);
+        Rectangle shellBox = {bounds.x+20, y+25, bounds.width-40, 30};
+        DrawRectangleRec(shellBox, app.editingField == 3 ? theme.bg : theme.border);
+        DrawRectangleLinesEx(shellBox, 1, theme.border);
+        DrawTextEx(font, settings.shellPath.c_str(), {shellBox.x+5, shellBox.y+5}, (float)Config::FONT_SIZE_SMALL, 1, theme.text);
+        if (CheckCollisionPointRec(GetMousePosition(), shellBox) && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+            app.editingField=3; app.inputCursor=settings.shellPath.size();
+        }
+        if (app.editingField == 3 && (int)(GetTime()*2)%2==0) {
+            float cw = MeasureTextEx(font, settings.shellPath.substr(0, app.inputCursor).c_str(), (float)Config::FONT_SIZE_SMALL, 1).x;
+            DrawRectangle((int)(shellBox.x+5+cw), (int)(shellBox.y+5), 2, 20, theme.cursor);
+        }
+        // Quick picks
+        if (DrawMenuBtn({bounds.x+20, y+60, 70, 26}, "zsh", font, theme.btnNormal)) settings.shellPath="/bin/zsh";
+        if (DrawMenuBtn({bounds.x+95, y+60, 70, 26}, "bash", font, theme.btnNormal)) settings.shellPath="/bin/bash";
+        if (DrawMenuBtn({bounds.x+170, y+60, 70, 26}, "sh", font, theme.btnNormal)) settings.shellPath="/bin/sh";
+
+        y += 95;
         // Layout
         DrawTextEx(font, "Layout:", {bounds.x+20, y+5}, (float)Config::FONT_SIZE_UI, 1, GRAY);
         if(DrawMenuBtn({bounds.x+100, y, 80, 30}, "Standard", font, settings.layout==LayoutMode::Standard?theme.btnNormal:theme.panelBg)) settings.layout=LayoutMode::Standard;
@@ -124,6 +170,8 @@ void DrawSettings(Rectangle bounds, Font font, Editor& editor, AppState& app) {
             Font newFont = LoadFontEx(settings.fontPath.c_str(), 96, 0, 250);
             SetTextureFilter(newFont.texture, TEXTURE_FILTER_BILINEAR);
             editor.reloadFont(newFont);
+            terminal.close();
+            terminal.init();
             SaveSettings();
             ShowToast("Settings Saved");
         }
@@ -162,6 +210,7 @@ void DrawSettings(Rectangle bounds, Font font, Editor& editor, AppState& app) {
     
     if (app.editingField == 1) HandleTextInput(settings.fontPath, app.inputCursor);
     if (app.editingField == 2) HandleTextInput(settings.cFlags, app.inputCursor);
+    if (app.editingField == 3) HandleTextInput(settings.shellPath, app.inputCursor);
 }
 
 void DrawAbout(Rectangle bounds, Font font, AppState& app, Texture2D icon) {
@@ -226,8 +275,10 @@ void DrawToasts(Font font, int w, int h) {
 // --- MAIN LOOP ---
 
 int main() {
-    SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT);
+    SetupAppWorkingDir();
+    SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT);
     InitWindow(Config::WIN_WIDTH_DEFAULT, Config::WIN_HEIGHT_DEFAULT, "ctom"); 
+    InitAudioDevice();
     SetTargetFPS(60);
     SetExitKey(KEY_NULL);
     
@@ -244,11 +295,11 @@ int main() {
     LoadSettings();
     Font mainFont = LoadFontEx(settings.fontPath.c_str(), 96, 0, 250);
     SetTextureFilter(mainFont.texture, TEXTURE_FILTER_BILINEAR);
+    ApplyThemePreset(settings.themeIndex);
     Editor editor; editor.init(mainFont); 
     FileManager fileMgr; fileMgr.init(); 
     Terminal terminal; terminal.init(); 
     AppState app;
-    ApplyThemePreset(settings.themeIndex);
 
     while (!WindowShouldClose()) {
         float w = (float)GetScreenWidth(); 
@@ -338,7 +389,30 @@ int main() {
         if (!app.showSettings && !app.showAbout) {
             fileMgr.update(rFiles, app.focus==1 && !app.showMenuFile); 
             std::string sel = fileMgr.popSelectedFile();
-            if (!sel.empty()) { editor.loadFile(sel); app.focus=0; }
+            if (!sel.empty()) {
+                auto lower = sel;
+                std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+                bool isImage = lower.size() >= 4 &&
+                               (lower.rfind(".png") == lower.size() - 4 ||
+                                lower.rfind(".jpg") == lower.size() - 4 ||
+                                lower.rfind(".jpeg") == lower.size() - 5 ||
+                                lower.rfind(".gif") == lower.size() - 4 ||
+                                lower.rfind(".bmp") == lower.size() - 4);
+                bool isAudio = lower.size() >= 4 &&
+                               (lower.rfind(".wav") == lower.size() - 4 ||
+                                lower.rfind(".mp3") == lower.size() - 4 ||
+                                lower.rfind(".ogg") == lower.size() - 4);
+                if (isImage && settings.imagePreview) {
+                    editor.setPreview(sel);
+                    app.focus=0;
+                } else if (isAudio && settings.audioPreview) {
+                    editor.setPreview(sel);
+                    app.focus=0;
+                } else if (!isImage && !isAudio) {
+                    editor.loadFile(sel);
+                    app.focus=0;
+                }
+            }
             terminal.update(app.focus==2); 
             editor.update(rEdit, app.focus==0 && !app.showMenuFile && !app.showMenuHelp);
         }
@@ -362,7 +436,15 @@ int main() {
             
             if (hRun && IsMouseButtonPressed(MOUSE_LEFT_BUTTON) && !isModalOpen) {
                 std::string cmd;
-                if (app.runMakefile) cmd = "start cmd /c \"make && pause\""; 
+                if (app.runMakefile) {
+#ifdef _WIN32
+                    cmd = "start cmd /c \"make && pause\"";
+#elif defined(__linux__)
+                    cmd = "x-terminal-emulator -e sh -lc \"make; echo; read -n1 -p 'Press any key to close'\"";
+#else
+                    cmd = "osascript -e 'tell app \"Terminal\" to do script \"make; read -n 1\"'";
+#endif
+                }
                 else {
                     std::string path = editor.getCurrentPath();
                     if (path.empty()) terminal.runCommand("echo No file selected");
@@ -370,7 +452,13 @@ int main() {
                         std::string buildCmd = settings.cFlags;
                         size_t pos = buildCmd.find("$FILE");
                         if (pos != std::string::npos) buildCmd.replace(pos, 5, "\"" + path + "\"");
+#ifdef _WIN32
                         cmd = "start cmd /c \"" + buildCmd + " && echo. && pause\"";
+#elif defined(__linux__)
+                        cmd = "x-terminal-emulator -e sh -lc \"" + buildCmd + "; echo; read -n1 -p 'Press any key to close'\"";
+#else
+                        cmd = "osascript -e 'tell app \"Terminal\" to do script \"" + buildCmd + "; read -n 1\"'";
+#endif
                     }
                 }
                 if (!cmd.empty()) { 
@@ -418,7 +506,7 @@ int main() {
 
             if (app.showSettings) { 
                 DrawRectangle(0,0,w,h,{0,0,0,100}); 
-                DrawSettings({(w-500)/2, (h-400)/2, 500, 400}, mainFont, editor, app); 
+                DrawSettings({(w-500)/2, (h-420)/2, 500, 420}, mainFont, editor, terminal, app); 
             }
             if (app.showAbout) { 
                 DrawRectangle(0,0,w,h,{0,0,0,100}); 
@@ -428,6 +516,8 @@ int main() {
             DrawToasts(mainFont, w, h);
         EndDrawing();
     }
+
+    CloseAudioDevice();
     
     if (logoTexture.id > 0) UnloadTexture(logoTexture);
     fileMgr.cleanup(); 
