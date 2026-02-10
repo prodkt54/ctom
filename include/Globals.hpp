@@ -70,11 +70,11 @@ struct AppSettings {
     int terminalHeight = 200;
     int terminalWidth = 400;
     
-    bool showSidebar = true;
-    bool showTerminal = true;
-    
-    std::string fontPath = "/../assets/JetBrainsMono-Regular.ttf";
+    std::string fontPath = "assets/JetBrainsMono-Regular.ttf";
+    std::string shellPath = "/bin/zsh";
     std::string cFlags = "g++ \"$FILE\" -o temp_run && temp_run";
+    bool imagePreview = true;
+    bool audioPreview = true;
     
     LayoutMode layout = LayoutMode::Standard;
     int themeIndex = 0; 
